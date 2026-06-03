@@ -1,6 +1,6 @@
+import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
 
 from PyQt6.QtCore import QObject, pyqtSignal, QThread
 from models.copier import RoboCopier, CopyResult
@@ -50,8 +50,8 @@ class CopyWorker(QThread):
         success_count = 0
         processed_count = 0
         start_time = time.perf_counter()
-        # Đẩy ThreadPoolExecutor vào trong Worker thay vì để ở Model 
-        # giúp kiểm soát việc dừng/hủy và emit signal real-time mượt hơn
+        # Push the ThreadPoolExecutor into the Worker instead of leaving it in the Model 
+        # helps control stop/cancel and emit signal real-time more smoothly
         with ThreadPoolExecutor(max_workers=self.copier.workers) as executor:
             future_to_file = {}
             for f in files:
@@ -63,7 +63,6 @@ class CopyWorker(QThread):
 
             processed_count = 0
             for future in as_completed(future_to_file):
-                # Nếu bị hủy, dừng đọc kết quả để giải phóng luồng ngay lập tức
                 if self.copier._is_cancelled:
                     break
                 
@@ -72,7 +71,7 @@ class CopyWorker(QThread):
                 
                 if not result.cancelled:
                     results.append(result)
-                    # Phát tín hiệu tiến độ từng file lên UI
+                    # Send signal to UI
                     status = "Success" if result.success else "Failed"
                     percent = int((processed_count / total_files) * 100)
                     self.progress_signal.emit(f"[{processed_count}/{total_files}] Copied: {result.filepath.name} -> {status} - {percent}%")

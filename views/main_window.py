@@ -66,7 +66,6 @@ class MainWindow(QMainWindow):
 
         # Connect UI interactions to ViewModel methods
         self.action_btn.clicked.connect(self._on_action_clicked)
-        # self.cancel_btn.clicked.connect(self.vm.cancel_copy)
 
     def _bind_view_model(self) -> None:
         """Subscribes to the signals emitted by the ViewModel."""
@@ -87,12 +86,7 @@ class MainWindow(QMainWindow):
             dst=self.dst_input.text(),
             workers=self.worker_spinbox.value()
         )
-
-    # def _update_button_states(self, is_busy: bool) -> None:
-    #     """Toggles buttons based on the application state."""
-    #     self.start_btn.setEnabled(not is_busy)
-    #     self.cancel_btn.setEnabled(is_busy)
-
+        
     def _on_action_clicked(self) -> None:
         """Determines whether to Start or Cancel based on the current button text."""
         if self.action_btn.text() == "Start Copy":
