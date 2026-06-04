@@ -18,35 +18,54 @@ import subprocess
 import sys
 from pathlib import Path
 
-APP_NAME   = "Py-RoboCopy"
-ENTRY      = "main.py"
-ICON       = None          # set to "assets/icon.ico" if you have one
+APP_NAME  = "Py-RoboCopy"
+ENTRY     = "main.py"
+ICON      = "assets/icon.ico"   # used for the .exe file icon
+
+# Optional Qt modules we don't use — excluding them silences the
+# "Library not found" warnings and shrinks the output binary.
+EXCLUDE_MODULES = [
+    "PyQt6.Qt3DAnimation", "PyQt6.Qt3DCore", "PyQt6.Qt3DExtras",
+    "PyQt6.Qt3DInput",     "PyQt6.Qt3DLogic", "PyQt6.Qt3DRender",
+    "PyQt6.QtQml",         "PyQt6.QtQuick",   "PyQt6.QtQuick3D",
+    "PyQt6.QtQuickControls2", "PyQt6.QtQuickWidgets",
+    "PyQt6.QtWebEngineCore",  "PyQt6.QtWebEngineQuick",
+    "PyQt6.QtWebEngineWidgets","PyQt6.QtWebView",
+    "PyQt6.QtSql",
+    "PyQt6.QtMultimedia",  "PyQt6.QtMultimediaWidgets",
+    "PyQt6.QtBluetooth",   "PyQt6.QtNfc",     "PyQt6.QtPositioning",
+    "PyQt6.QtRemoteObjects","PyQt6.QtScxml",   "PyQt6.QtSensors",
+    "PyQt6.QtSerialPort",  "PyQt6.QtStateMachine", "PyQt6.QtTextToSpeech",
+    "tkinter", "unittest", "xmlrpc", "pydoc", "doctest",
+]
 
 
 def main():
     here = Path(__file__).parent
 
+    icon_path = here / ICON
+    if not icon_path.exists():
+        print(f"Warning: icon not found at {icon_path}")
+
     cmd = [
         sys.executable, "-m", "PyInstaller",
 
-        # single bundled .exe
-        "--onefile",
+        "--onefile",           # single .exe
+        "--windowed",          # no console window
 
-        # no black console window on Windows
-        "--windowed",
-
-        # name of the output binary
         f"--name={APP_NAME}",
-
-        # keep PyInstaller work files out of the source tree
         f"--distpath={here / 'dist'}",
         f"--workpath={here / 'build'}",
         f"--specpath={here / 'build'}",
-
-        # make sure our packages are found
         f"--paths={here}",
 
-        # hidden imports that PyInstaller sometimes misses with PyQt6
+        # Bundle the assets folder (icon + splash image) into the exe
+        f"--add-data={here / 'assets'};assets",
+
+        # .exe file icon
+        f"--icon={icon_path}",
+
+        # Hidden imports PyInstaller sometimes misses with PyQt6
         "--hidden-import=PyQt6.sip",
         "--hidden-import=PyQt6.QtCore",
         "--hidden-import=PyQt6.QtGui",
@@ -54,18 +73,17 @@ def main():
         "--collect-all=PyQt6",
     ]
 
-    if ICON and Path(ICON).exists():
-        cmd.append(f"--icon={ICON}")
+    for mod in EXCLUDE_MODULES:
+        cmd += ["--exclude-module", mod]
 
     cmd.append(str(here / ENTRY))
 
     print("Running PyInstaller…")
-    print(" ".join(cmd))
     result = subprocess.run(cmd)
 
     if result.returncode == 0:
         exe = here / "dist" / f"{APP_NAME}.exe"
-        print(f"\n✓ Build succeeded:  {exe}")
+        print(f"\n✓ Build succeeded: {exe}")
     else:
         print("\n✗ Build failed. Check the output above.")
         sys.exit(result.returncode)
