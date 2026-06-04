@@ -126,7 +126,7 @@ class CopyWorker(QThread):
 class RoboCopyApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Py-RoboCopy GUI")
+        self.setWindowTitle("RoboCopy GUI")
         self.resize(600, 450)
 
         # Main Layout

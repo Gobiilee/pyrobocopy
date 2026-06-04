@@ -201,9 +201,9 @@ class MainWindow(QMainWindow):
         self.resize(740, 640)
         self.setStyleSheet(DARK)
         
-        self.setWindowIcon(QIcon(r"assets/logo.ico"))
-        self._setup_ui()
-        self._bind_view_model()
+        # self.setWindowIcon(QIcon(r"assets/logo.ico"))
+        # self._setup_ui()
+        # self._bind_view_model()
 
         self._build_ui()
         self._connect_vm()
