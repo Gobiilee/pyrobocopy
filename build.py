@@ -1,5 +1,5 @@
 """
-build.py  –  Build Py-RoboCopy into a standalone .exe
+build.py  –  Build RoboCopy into a standalone .exe
 
 Usage
 -----
@@ -7,7 +7,7 @@ Usage
 
 Output
 ------
-    dist/Py-RoboCopy.exe   (Windows, single file, no console window)
+    dist/RoboCopy.exe   (Windows, single file, no console window)
 
 Requirements
 ------------
@@ -18,7 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-APP_NAME  = "Py-RoboCopy"
+APP_NAME  = "RoboCopy"
 ENTRY     = "main.py"
 ICON      = "assets/icon.ico"   # used for the .exe file icon
 

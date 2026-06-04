@@ -34,7 +34,7 @@ def _launch_main(splash: SplashScreen):
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("Py-RoboCopy")
+    app.setApplicationName("RoboCopy")
 
     # Set app-wide icon (affects taskbar group on Windows)
     app.setWindowIcon(QIcon(_asset("icon.ico")))
