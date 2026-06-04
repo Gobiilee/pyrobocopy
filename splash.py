@@ -137,7 +137,7 @@ class SplashScreen(QWidget):
         p.setFont(f)
         p.setPen(QColor("#e0e0e0"))
         p.drawText(0, iy + self._icon_px.height() + 16, W, 32,
-                   Qt.AlignmentFlag.AlignHCenter, "RoboCopy")
+                   Qt.AlignmentFlag.AlignHCenter, "pyRoboCopy")
 
         # ── tagline ───────────────────────────────────────────────────────────
         f2 = QFont("Segoe UI", 9)

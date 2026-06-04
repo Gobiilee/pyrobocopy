@@ -1,4 +1,4 @@
-# RoboCopy (MVVM Desktop Application)
+# pyRoboCopy (MVVM Desktop Application)
 
 A high-performance, multi-threaded folder synchronization and copying tool built with Python 3.10 and PyQt6. The application architecture strictly follows the **MVVM (Model-View-ViewModel)** design pattern to ensure clean separation of concerns, high maintainability, and reliable asynchronous execution.
 
@@ -102,13 +102,13 @@ pytest
 To compile the source files into a singular, independent executable that can run on any Windows system without a Python environment installed, utilize `pyinstaller`:
 
 ```powershell
-pyinstaller --noconsole --onefile --name "RoboCopy" main.py
+pyinstaller --noconsole --onefile --name "pyRoboCopy" main.py
 
 ```
 OR
 ```powershell
 pyinstaller --noconfirm --onefile --windowed `
---name "RoboCopy" `
+--name "pyRoboCopy" `
 --icon="assets/logo.ico" `
 --upx-dir="." `
 --exclude-module PyQt6.QtWebEngineCore `
@@ -125,7 +125,7 @@ main.py
 ```
 
 After compilation finishes, locate the ready-to-run file in the newly generated directory:
-`./dist/RoboCopy.exe`
+`./dist/pyRoboCopy.exe`
 
 ---
 

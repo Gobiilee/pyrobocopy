@@ -10,184 +10,16 @@ Performance design
 """
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QFileDialog, QLabel, QProgressBar,
-    QTextEdit, QSpinBox, QLineEdit, QFrame,
+    QCheckBox, QListWidget, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QFileDialog, QTextEdit, QSpinBox
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QTextCursor, QIcon
+from PyQt6.QtGui import QTextCursor
 
 from viewmodels.main_vm import MainViewModel
+from views.path_card import PathCard, _label
+from views.stats_bar import DARK, FILE_COLOR, FILE_ICON, StatsBar
 
-
-# ── helpers ───────────────────────────────────────────────────────────────────
-
-def _label(text: str, *, bold=False, size=9, color="#cccccc") -> QLabel:
-    lbl = QLabel(text)
-    f = lbl.font()
-    f.setPointSize(size)
-    f.setBold(bold)
-    lbl.setFont(f)
-    lbl.setStyleSheet(f"color: {color};")
-    return lbl
-
-
-# ── path card ─────────────────────────────────────────────────────────────────
-
-class PathCard(QWidget):
-    """Labeled folder picker card."""
-
-    def __init__(self, title: str, placeholder: str, parent=None):
-        super().__init__(parent)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(6)
-        layout.addWidget(_label(title, bold=True, size=8, color="#888888"))
-
-        row = QHBoxLayout()
-        row.setSpacing(6)
-
-        row.addWidget(QLabel("📁"))
-
-        self.path_input = QLineEdit()
-        self.path_input.setPlaceholderText(placeholder)
-        self.path_input.setReadOnly(True)
-        self.path_input.setStyleSheet("""
-            QLineEdit {
-                background: #1e1e1e;
-                border: 1px solid #3a3a3a;
-                border-radius: 4px;
-                color: #e0e0e0;
-                padding: 4px 8px;
-                font-size: 9pt;
-            }
-        """)
-        row.addWidget(self.path_input)
-
-        self.browse_btn = QPushButton("Browse…")
-        self.browse_btn.setFixedWidth(78)
-        self.browse_btn.setStyleSheet("""
-            QPushButton {
-                background: #2d2d2d; border: 1px solid #4a4a4a;
-                border-radius: 4px; color: #cccccc;
-                padding: 4px 10px; font-size: 9pt;
-            }
-            QPushButton:hover   { background: #383838; }
-            QPushButton:pressed { background: #252525; }
-            QPushButton:disabled{ color: #555; }
-        """)
-        row.addWidget(self.browse_btn)
-        layout.addLayout(row)
-
-        self.setStyleSheet("""
-            PathCard {
-                background: #252525;
-                border: 1px solid #333333;
-                border-radius: 6px;
-            }
-        """)
-
-    def text(self) -> str:
-        return self.path_input.text()
-
-    def set_enabled(self, enabled: bool):
-        self.browse_btn.setEnabled(enabled)
-
-
-# ── stats bar ─────────────────────────────────────────────────────────────────
-
-class StatsBar(QWidget):
-    """Speed · ETA · file count · progress bar — updated in batch."""
-
-    def __init__(self):
-        super().__init__()
-        main = QVBoxLayout(self)
-        main.setContentsMargins(12, 8, 12, 8)
-        main.setSpacing(6)
-
-        nums = QHBoxLayout()
-        nums.setSpacing(24)
-
-        self.speed_lbl = self._make_stat("Speed",    "— B/s")
-        self.eta_lbl   = self._make_stat("ETA",      "—")
-        self.files_lbl = self._make_stat("Files",    "0 / 0")
-        self.pct_lbl   = self._make_stat("Progress", "0 %")
-
-        for w in (self.speed_lbl, self.eta_lbl, self.files_lbl, self.pct_lbl):
-            nums.addWidget(w)
-        nums.addStretch()
-        main.addLayout(nums)
-
-        self.bar = QProgressBar()
-        self.bar.setValue(0)
-        self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(8)
-        self.bar.setStyleSheet("""
-            QProgressBar {
-                background: #2a2a2a; border-radius: 4px; border: none;
-            }
-            QProgressBar::chunk {
-                border-radius: 4px;
-                background: qlineargradient(
-                    x1:0,y1:0,x2:1,y2:0, stop:0 #1a73e8, stop:1 #34a853);
-            }
-        """)
-        main.addWidget(self.bar)
-
-    @staticmethod
-    def _make_stat(label: str, value: str) -> QWidget:
-        w = QWidget()
-        v = QVBoxLayout(w)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(1)
-        v.addWidget(_label(label, size=7, color="#666666"))
-        val = _label(value, bold=True, size=10, color="#e0e0e0")
-        val.setObjectName("val")
-        v.addWidget(val)
-        return w
-
-    def _val(self, w: QWidget) -> QLabel:
-        return w.findChild(QLabel, "val")
-
-    def update_stats(self, cf: int, tf: int, cb: int, tb: int,
-                     speed: float, eta: float):
-        from viewmodels.main_vm import fmt_size, fmt_time
-        pct = int(cb / tb * 100) if tb else 0
-        self._val(self.speed_lbl).setText(f"{fmt_size(int(speed))}/s")
-        self._val(self.eta_lbl).setText(fmt_time(eta))
-        self._val(self.files_lbl).setText(f"{cf} / {tf}")
-        self._val(self.pct_lbl).setText(f"{pct} %")
-        self.bar.setValue(pct)
-
-    def reset(self):
-        self._val(self.speed_lbl).setText("— B/s")
-        self._val(self.eta_lbl).setText("—")
-        self._val(self.files_lbl).setText("0 / 0")
-        self._val(self.pct_lbl).setText("0 %")
-        self.bar.setValue(0)
-
-
-# ── global dark stylesheet ────────────────────────────────────────────────────
-
-DARK = """
-QMainWindow, QWidget { background: #1a1a1a; color: #e0e0e0; }
-QScrollBar:vertical   { background: #1a1a1a; width: 8px; margin: 0; }
-QScrollBar::handle:vertical {
-    background: #3a3a3a; border-radius: 4px; min-height: 20px;
-}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-"""
-
-# Rich-text color map for file list entries
-FILE_COLOR = {
-    "done":   "#4caf50",
-    "failed": "#f44336",
-    "copying":"#f0c040",
-}
-FILE_ICON = {
-    "done": "✓", "failed": "✗", "copying": "⟳",
-}
 
 
 # ── main window ───────────────────────────────────────────────────────────────
@@ -197,13 +29,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.vm = vm
         
-        self.setWindowTitle("RoboCopy")
-        self.resize(740, 640)
+        self.setWindowTitle("pyRoboCopy v2 (Network Optimized)")
+        self.resize(760, 680)
         self.setStyleSheet(DARK)
-        
-        # self.setWindowIcon(QIcon(r"assets/logo.ico"))
-        # self._setup_ui()
-        # self._bind_view_model()
 
         self._build_ui()
         self._connect_vm()
@@ -217,38 +45,55 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
 
-        # Source / destination cards
-        path_row = QHBoxLayout()
-        path_row.setSpacing(10)
+        # ---- TOP: QUEUE SELECTION COMPONENT ----
+        layout.addWidget(_label("SOURCE QUEUE (FILES & FOLDERS)", bold=True, size=8, color="#888888"))
+        
+        queue_layout = QHBoxLayout()
+        queue_layout.setSpacing(10)
+        
+        self.src_queue_list = QListWidget()
+        queue_layout.addWidget(self.src_queue_list, 1)
+        
+        # Queue Management Control Sidebar Buttons
+        ctrl_sidebar = QVBoxLayout()
+        ctrl_sidebar.setSpacing(6)
+        ctrl_sidebar.setAlignment(Qt.AlignmentFlag.AlignTop)
+        
+        self.add_file_btn = QPushButton("+ File")
+        self.add_folder_btn = QPushButton("+ Folder")
+        self.remove_item_btn = QPushButton("❌ Remove")
+        
+        btn_style = """
+            QPushButton {
+                background: #252525; border: 1px solid #3a3a3a;
+                border-radius: 4px; color: #b5b5b5; padding: 6px; font-size: 8.5pt; font-weight: bold; width: 70px;
+            }
+            QPushButton:hover { background: #2d2d2d; color: #e0e0e0; }
+            QPushButton:pressed { background: #1e1e1e; }
+            QPushButton:disabled { color: #444; background: #181818; border-color: #252525; }
+        """
+        for btn in (self.add_file_btn, self.add_folder_btn, self.remove_item_btn):
+            btn.setStyleSheet(btn_style)
+            ctrl_sidebar.addWidget(btn)
+            
+        queue_layout.addLayout(ctrl_sidebar)
+        layout.addLayout(queue_layout)
 
-        self.src_card = PathCard("SOURCE", "Choose source folder…")
-        self.src_card.browse_btn.clicked.connect(
-            lambda: self._pick_folder(self.src_card.path_input))
+        # ---- MIDDLE: DESTINATION TARGET CARD ----
+        self.dst_card = PathCard("DESTINATION (LOCAL OR LAN ETHERNET UNC PATH)", "Choose target destination folder or enter UNC path...")
+        layout.addWidget(self.dst_card)
 
-        arrow = _label("→", bold=True, size=16, color="#555555")
-        arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        arrow.setFixedWidth(28)
-
-        self.dst_card = PathCard("DESTINATION", "Choose destination folder…")
-        self.dst_card.browse_btn.clicked.connect(
-            lambda: self._pick_folder(self.dst_card.path_input))
-
-        path_row.addWidget(self.src_card, 1)
-        path_row.addWidget(arrow)
-        path_row.addWidget(self.dst_card, 1)
-        layout.addLayout(path_row)
-
-        # Stats bar
+        # ---- STATS BAR REALTIME TRACKER ----
         self.stats_bar = StatsBar()
         self.stats_bar.setStyleSheet(
             "background:#252525; border:1px solid #333; border-radius:6px;")
         layout.addWidget(self.stats_bar)
 
-        # File list — plain QTextEdit, much faster than per-row widgets
-        layout.addWidget(_label("FILES", bold=True, size=8, color="#555555"))
+        # ---- FILE PIPELINE FEED ----
+        layout.addWidget(_label("FILES TRANSFER PIPELINE", bold=True, size=8, color="#555555"))
         self.file_log = QTextEdit()
         self.file_log.setReadOnly(True)
-        self.file_log.setFixedHeight(210)
+        self.file_log.setFixedHeight(160)
         self.file_log.setStyleSheet("""
             QTextEdit {
                 background: #1e1e1e;
@@ -284,6 +129,11 @@ class MainWindow(QMainWindow):
         bottom = QHBoxLayout()
         bottom.setSpacing(10)
 
+        # Mode configurations
+        self.cut_mode_checkbox = QCheckBox("Cut Mode (Safe move via source erasure)")
+        bottom.addWidget(self.cut_mode_checkbox)
+        bottom.addStretch()
+
         bottom.addWidget(_label("Threads:", color="#888888", size=9))
 
         self.thread_spin = QSpinBox()
@@ -316,10 +166,16 @@ class MainWindow(QMainWindow):
         self.action_btn.setFixedHeight(38)
         self.action_btn.setMinimumWidth(165)
         self._style_start()
-        self.action_btn.clicked.connect(self._on_action)
         bottom.addWidget(self.action_btn)
 
         layout.addLayout(bottom)
+
+        # Connect internal action handlers
+        self.add_file_btn.clicked.connect(self._pick_files_to_queue)
+        self.add_folder_btn.clicked.connect(self._pick_folder_to_queue)
+        self.remove_item_btn.clicked.connect(self._remove_selected_queue_item)
+        self.dst_card.browse_btn.clicked.connect(self._pick_destination_folder)
+        self.action_btn.clicked.connect(self._on_action)
 
     # ── connect ViewModel ─────────────────────────────────────────────────────
 
@@ -327,14 +183,39 @@ class MainWindow(QMainWindow):
         self.vm.log_updated.connect(self._append_log)
         self.vm.file_batch.connect(self._on_file_batch)
         self.vm.stats_update.connect(self.stats_bar.update_stats)
-        self.vm.ui_busy.connect(self._set_busy)
+        self.vm.ui_state_changed.connect(self._set_busy)
+        
+        # Bind ViewModel selection update mapping
+        if hasattr(self.vm, 'selection_updated'):
+            self.vm.selection_updated.connect(lambda paths: self._refresh_src_list_widget(paths))
 
     # ── slots ─────────────────────────────────────────────────────────────────
 
-    def _pick_folder(self, line_edit: QLineEdit):
-        folder = QFileDialog.getExistingDirectory(self, "Select Folder")
+    def _pick_files_to_queue(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "Add Files to Queue")
+        if files:
+            self.vm.add_paths(files)
+
+    def _pick_folder_to_queue(self):
+        folder = QFileDialog.getExistingDirectory(self, "Add Folder to Queue")
         if folder:
-            line_edit.setText(folder)
+            self.vm.add_paths([folder])
+
+    def _remove_selected_queue_item(self):
+        current_item = self.src_queue_list.currentItem()
+        if current_item:
+            self.vm.remove_path(current_item.text())
+
+    def _refresh_src_list_widget(self, paths: list):
+        self.src_queue_list.clear()
+        if paths:
+            str_paths = [str(p) for p in paths]
+            self.src_queue_list.addItems(str_paths)
+
+    def _pick_destination_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Destination Target")
+        if folder:
+            self.dst_card.path_input.setText(folder)
 
     def _append_log(self, msg: str):
         self.log_area.append(msg)
@@ -362,7 +243,7 @@ class MainWindow(QMainWindow):
                 f'&nbsp;{safe_name}'
                 f'<span style="color:#555555"> &nbsp;{size}</span>'
             )
-
+        
         # Append all rows at once — one layout pass
         cursor = self.file_log.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
@@ -383,10 +264,11 @@ class MainWindow(QMainWindow):
         self.log_area.clear()
         self.file_log.clear()
         self.stats_bar.reset()
+        
+        # Calls the updated v2 start routine inside your viewmodel
         self.vm.start_copy(
-            src=self.src_card.text(),
-            dst=self.dst_card.text(),
-            workers=self.thread_spin.value(),
+            dst_dir=self.dst_card.text(),
+            move_mode=self.cut_mode_checkbox.isChecked()
         )
 
     def _cancel(self):
@@ -395,9 +277,17 @@ class MainWindow(QMainWindow):
 
     def _set_busy(self, busy: bool):
         self.action_btn.setEnabled(True)
-        self.src_card.set_enabled(not busy)
+        
+        # Lock staging mutations during processing cycles
+        self.src_queue_list.setEnabled(not busy)
+        self.add_file_btn.setEnabled(not busy)
+        self.add_folder_btn.setEnabled(not busy)
+        self.remove_item_btn.setEnabled(not busy)
+        
         self.dst_card.set_enabled(not busy)
         self.thread_spin.setEnabled(not busy)
+        self.cut_mode_checkbox.setEnabled(not busy)
+        
         if busy:
             self._style_cancel()
         else:

@@ -123,10 +123,10 @@ class CopyWorker(QThread):
 # ---------------------------------------------------------
 # 3. THE MAIN GUI APPLICATION
 # ---------------------------------------------------------
-class RoboCopyApp(QMainWindow):
+class pyRoboCopyApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("RoboCopy GUI")
+        self.setWindowTitle("pyRoboCopy GUI")
         self.resize(600, 450)
 
         # Main Layout
@@ -231,6 +231,6 @@ class RoboCopyApp(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = RoboCopyApp()
+    window = pyRoboCopyApp()
     window.show()
     sys.exit(app.exec())
