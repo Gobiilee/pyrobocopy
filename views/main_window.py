@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QTextEdit, QSpinBox, QLineEdit, QFrame,
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QTextCursor
+from PyQt6.QtGui import QTextCursor, QIcon
 
 from viewmodels.main_vm import MainViewModel
 
@@ -196,9 +196,14 @@ class MainWindow(QMainWindow):
     def __init__(self, vm: MainViewModel) -> None:
         super().__init__()
         self.vm = vm
-        self.setWindowTitle("Py-RoboCopy")
+        
+        self.setWindowTitle("RoboCopy")
         self.resize(740, 640)
         self.setStyleSheet(DARK)
+        
+        self.setWindowIcon(QIcon(r"assets/logo.ico"))
+        self._setup_ui()
+        self._bind_view_model()
 
         self._build_ui()
         self._connect_vm()

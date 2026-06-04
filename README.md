@@ -105,6 +105,24 @@ To compile the source files into a singular, independent executable that can run
 pyinstaller --noconsole --onefile --name "RoboCopy" main.py
 
 ```
+OR
+```powershell
+pyinstaller --noconfirm --onefile --windowed `
+--name "RoboCopy" `
+--icon="assets/logo.ico" `
+--upx-dir="." `
+--exclude-module PyQt6.QtWebEngineCore `
+--exclude-module PyQt6.QtWebEngineWidgets `
+--exclude-module PyQt6.QtPdf `
+--exclude-module PyQt6.QtMultimedia `
+--exclude-module PyQt6.Qt3DCore `
+--exclude-module PyQt6.QtQuick `
+--exclude-module PyQt6.QtNetwork `
+--exclude-module PyQt6.QtSql `
+--exclude-module PyQt6.QtXml `
+main.py
+
+```
 
 After compilation finishes, locate the ready-to-run file in the newly generated directory:
 `./dist/RoboCopy.exe`
