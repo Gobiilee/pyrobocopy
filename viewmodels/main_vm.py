@@ -1,18 +1,64 @@
+"""
+ViewModel – bridges CopyWorker (background thread) and the View.
+
+Performance design
+──────────────────
+The worker emits signals into thread-safe queues.
+A 100 ms QTimer on the main thread drains those queues and
+updates the UI in one batch — at most 10 repaints/second
+regardless of how many files complete per second.
+"""
+
 import time
+from collections import deque
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Queue, Empty
 
-from PyQt6.QtCore import QObject, pyqtSignal, QThread
+from PyQt6.QtCore import QObject, pyqtSignal, QThread, QTimer
+
 from models.copier import RoboCopier, CopyResult
+
+
+# ── formatting helpers ────────────────────────────────────────────────────────
+
+def fmt_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
+def fmt_time(seconds: float) -> str:
+    seconds = int(max(0, seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+# ── worker thread ─────────────────────────────────────────────────────────────
 
 class CopyWorker(QThread):
     """
-    A background thread to run the blocking copy process.
-    Prevents the main UI from freezing.
+    Runs file copying on a background thread.
+    All signals go to thread-safe queues; the main thread drains them
+    via a QTimer — never directly updating widgets from here.
     """
-    log_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal(list)
-    progress_signal = pyqtSignal(str)
+
+    # Emitted once when scanning is done (total_files, total_bytes)
+    scan_done    = pyqtSignal(int, int)
+    # Emitted per completed file (name, size_bytes, success)
+    file_done    = pyqtSignal(str, int, bool)
+    # Periodic stats (copied_files, total_files, copied_bytes, total_bytes, speed_bps, eta_sec)
+    stats_tick   = pyqtSignal(int, int, int, int, float, float)
+    # Simple log lines
+    log_message  = pyqtSignal(str)
+    # Final list of results
+    finished_sig = pyqtSignal(list)
+
+    # How often (seconds) to emit a stats_tick while copying
+    STATS_INTERVAL = 0.1
 
     def __init__(self, copier: RoboCopier, src: str, dst: str):
         super().__init__()
@@ -21,130 +67,191 @@ class CopyWorker(QThread):
         self.dst = dst
 
     def run(self) -> None:
-        self.log_signal.emit(f"Starting copy from {self.src} to {self.dst}...")
-        
         self.copier._is_cancelled = False
+
         src_path = Path(self.src)
         dst_path = Path(self.dst) / src_path.name
-        results: list[CopyResult] = []
 
         if not src_path.exists():
-            results.append(CopyResult(False, src_path, "Source directory does not exist."))
-            self.finished_signal.emit(results)
+            self.log_message.emit(f"Error: Source '{self.src}' does not exist.")
+            self.finished_sig.emit([])
             return
 
-        self.log_signal.emit("Scanning directory, calculating size, and mapping structure...")
-        
-        files, total_size_bytes = self.copier.get_folder_stats(src_path)
+        # ── scan ──────────────────────────────────────────────────────────────
+        self.log_message.emit("Scanning source folder…")
+        files, total_bytes = self.copier.get_folder_stats(src_path)
         total_files = len(files)
-        total_size_mb = total_size_bytes / (1024 * 1024)
-        
-        self.log_signal.emit(f"Total files found: {total_files}")
-        self.log_signal.emit(f"Total size to copy: {total_size_mb:.2f} MB\n")
-        
+        self.log_message.emit(f"Found {total_files} files · {fmt_size(total_bytes)} total")
+        self.scan_done.emit(total_files, total_bytes)
+
         if total_files == 0:
-            self.log_signal.emit("No files found to copy.")
-            self.finished_signal.emit(results)
+            self.log_message.emit("Nothing to copy.")
+            self.finished_sig.emit([])
             return
 
-        success_count = 0
-        processed_count = 0
+        # ── copy ──────────────────────────────────────────────────────────────
+        # Rolling 3-second speed window
+        speed_window: deque[tuple[float, int]] = deque()
+        WINDOW = 3.0
+
+        copied_files = 0
+        copied_bytes = 0
+        results: list[CopyResult] = []
         start_time = time.perf_counter()
-        # Push the ThreadPoolExecutor into the Worker instead of leaving it in the Model 
-        # helps control stop/cancel and emit signal real-time more smoothly
-        with ThreadPoolExecutor(max_workers=self.copier.workers) as executor:
-            future_to_file = {}
-            for f in files:
-                if self.copier._is_cancelled:
-                    break
-                dest_file = dst_path / f.relative_to(src_path)
-                future = executor.submit(self.copier.copy_file, f, dest_file)
-                future_to_file[future] = f
+        last_stats_emit = start_time
 
-            processed_count = 0
-            for future in as_completed(future_to_file):
+        with ThreadPoolExecutor(max_workers=self.copier.workers) as pool:
+            future_map = {
+                pool.submit(self.copier.copy_file, f, dst_path / f.relative_to(src_path)): f
+                for f in files
+                if not self.copier._is_cancelled
+            }
+
+            for future in as_completed(future_map):
                 if self.copier._is_cancelled:
                     break
-                
+
                 result = future.result()
-                processed_count += 1
-                
-                if not result.cancelled:
-                    results.append(result)
-                    # Send signal to UI
-                    status = "Success" if result.success else "Failed"
-                    percent = int((processed_count / total_files) * 100)
-                    self.progress_signal.emit(f"[{processed_count}/{total_files}] Copied: {result.filepath.name} -> {status} - {percent}%")
-        
-        end_time = time.perf_counter()
-        duration_seconds = max(end_time - start_time, 0.001) 
-        speed_mb_per_second = total_size_mb / duration_seconds
-        # --- SUMMARY ---
-        self.log_signal.emit("\n" + "="*30)
-        self.log_signal.emit("       COPY SUMMARY")
-        self.log_signal.emit("="*30)
-        self.log_signal.emit(f"Files Copied : {success_count} / {total_files}")
-        self.log_signal.emit(f"Total Data   : {total_size_mb:.2f} MB")
-        self.log_signal.emit(f"Time Taken   : {duration_seconds:.2f} seconds")
-        if not self.copier._is_cancelled:
-            self.log_signal.emit(f"Avg Speed    : {speed_mb_per_second:.2f} MB/s")
-        self.log_signal.emit("="*30)
+                if result.cancelled:
+                    continue
 
-        self.finished_signal.emit(results)
+                results.append(result)
+                copied_files += 1
 
+                # Signal the completed file (cheap: name + int + bool)
+                self.file_done.emit(
+                    result.filepath.name,
+                    result.size_bytes,
+                    result.success,
+                )
+
+                if result.success:
+                    copied_bytes += result.size_bytes
+                    now = time.perf_counter()
+                    speed_window.append((now, result.size_bytes))
+
+                    # Prune old window entries
+                    cutoff = now - WINDOW
+                    while speed_window and speed_window[0][0] < cutoff:
+                        speed_window.popleft()
+
+                    # Emit stats at most every STATS_INTERVAL seconds
+                    if now - last_stats_emit >= self.STATS_INTERVAL:
+                        last_stats_emit = now
+                        window_bytes = sum(b for _, b in speed_window)
+                        window_dur   = now - speed_window[0][0] + 0.001
+                        speed_bps    = window_bytes / window_dur
+                        remaining    = total_bytes - copied_bytes
+                        eta          = remaining / speed_bps if speed_bps > 0 else 0
+                        self.stats_tick.emit(
+                            copied_files, total_files,
+                            copied_bytes, total_bytes,
+                            speed_bps, eta,
+                        )
+
+        # ── summary ───────────────────────────────────────────────────────────
+        elapsed   = max(time.perf_counter() - start_time, 0.001)
+        avg_speed = copied_bytes / elapsed
+        ok        = sum(1 for r in results if r.success)
+        fail      = len(results) - ok
+
+        self.log_message.emit("─" * 40)
+        if self.copier._is_cancelled:
+            self.log_message.emit("⚠  Transfer cancelled by user")
+        self.log_message.emit(
+            f"✓ {ok} copied   ✗ {fail} failed   "
+            f"{fmt_size(copied_bytes)} in {fmt_time(elapsed)}   "
+            f"avg {fmt_size(int(avg_speed))}/s"
+        )
+        self.log_message.emit("─" * 40)
+        self.finished_sig.emit(results)
+
+
+# ── view-model ────────────────────────────────────────────────────────────────
 
 class MainViewModel(QObject):
     """
-    Transforms Model data into UI-friendly signals and handles user commands.
+    Receives raw signals from the worker, buffers them,
+    and re-emits coarse-grained UI signals on a 100 ms timer.
     """
-    # Signals that the View will listen to
-    log_updated = pyqtSignal(str)
+
+    # ── outgoing signals (View listens to these) ──────────────────────────────
+    log_updated   = pyqtSignal(str)
+    # Batch of completed rows: list of (name, size_str, status_str)
+    file_batch    = pyqtSignal(list)
+    stats_update  = pyqtSignal(int, int, int, int, float, float)
     copy_finished = pyqtSignal()
-    ui_state_changed = pyqtSignal(bool)  # True if busy, False if idle
+    ui_busy       = pyqtSignal(bool)
+
+    # ── flush interval ────────────────────────────────────────────────────────
+    FLUSH_MS = 100   # drain queue and repaint at most 10×/s
 
     def __init__(self) -> None:
         super().__init__()
-        self.copier = RoboCopier()
+        self.copier  = RoboCopier()
         self._worker: CopyWorker | None = None
 
+        # Pending file events waiting to be flushed to the View
+        self._pending_files: list[tuple[str, str, str]] = []
+
+        # 100 ms flush timer (only runs while copying)
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setInterval(self.FLUSH_MS)
+        self._flush_timer.timeout.connect(self._flush)
+
+        # Cache the last stats so we can re-emit on flush
+        self._last_stats: tuple | None = None
+
+    # ── public ────────────────────────────────────────────────────────────────
+
     def start_copy(self, src: str, dst: str, workers: int) -> None:
-        """Called by the View to begin the process."""
         if not src or not dst:
-            self.log_updated.emit("Error: Source and Destination must be provided.")
+            self.log_updated.emit("Error: Source and Destination must be set.")
             return
 
-        self.ui_state_changed.emit(True)  # Tell UI to disable 'Start' button
         self.copier.workers = workers
-        
+        self._pending_files.clear()
+        self._last_stats = None
+        self.ui_busy.emit(True)
+
         self._worker = CopyWorker(self.copier, src, dst)
-        self._worker.log_signal.connect(self.log_updated.emit)
-        self._worker.progress_signal.connect(self.log_updated.emit) # Log real-time
-        self._worker.finished_signal.connect(self._on_copy_finished)
+        self._worker.log_message.connect(self.log_updated)
+        self._worker.file_done.connect(self._on_file_done)
+        self._worker.stats_tick.connect(self._on_stats_tick)
+        self._worker.finished_sig.connect(self._on_finished)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
+        self._flush_timer.start()
+
     def cancel_copy(self) -> None:
-        """Called by the View when the user hits 'Cancel'."""
         if self._worker and self._worker.isRunning():
-            self.log_updated.emit("Cancellation requested. Waiting for active files to finish...")
+            self.log_updated.emit("Cancellation requested…")
             self.copier.cancel()
 
-    def _on_copy_finished(self, results: list[CopyResult]) -> None:
-        """Processes the results from the background thread."""
-        success_count = sum(1 for r in results if r.success)
-        fail_count = len(results) - success_count
-        
-        self.log_updated.emit("=" * 30)
-        if self.copier._is_cancelled:
-            self.log_updated.emit("Process CANCELLED by user.")
-        self.log_updated.emit(f"Process Complete. Copied: {success_count}, Failed: {fail_count}")
-        
-        # Log failures if any occurred
-        if fail_count > 0:
-            self.log_updated.emit("\nErrors encountered:")
-            for r in results:
-                if not r.success:
-                    self.log_updated.emit(f"- {r.filepath.name}: {r.error_message}")
-        
-        self.ui_state_changed.emit(False)  # Tell UI to re-enable buttons
+    # ── worker signal receivers (can be called from any thread via Qt queued) ─
+
+    def _on_file_done(self, name: str, size_bytes: int, success: bool) -> None:
+        status = "done" if success else "failed"
+        self._pending_files.append((name, fmt_size(size_bytes), status))
+
+    def _on_stats_tick(self, cf, tf, cb, tb, speed, eta) -> None:
+        # Just cache; _flush will emit to the View
+        self._last_stats = (cf, tf, cb, tb, speed, eta)
+
+    def _on_finished(self, results: list) -> None:
+        self._flush_timer.stop()
+        self._flush()          # drain anything still pending
+        self.ui_busy.emit(False)
         self.copy_finished.emit()
+
+    # ── flush (main thread, called by timer) ──────────────────────────────────
+
+    def _flush(self) -> None:
+        if self._pending_files:
+            self.file_batch.emit(list(self._pending_files))
+            self._pending_files.clear()
+
+        if self._last_stats:
+            self.stats_update.emit(*self._last_stats)
+            self._last_stats = None
