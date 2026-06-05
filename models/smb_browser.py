@@ -96,21 +96,44 @@ class SMBBrowser:
     ) -> None:
         self._is_cancelled = False
 
-        file_list: list[tuple[str, int]] = []
+        # file_list  – (unc_path, size_bytes) for every file to copy
+        # empty_dirs – unc_paths of directories that contained no files at all
+        file_list:  list[tuple[str, int]] = []
+        empty_dirs: list[str]             = []
+
         on_log("Scanning selected items…")
         for unc in selected_paths:
             if self._is_cancelled:
                 break
-            self._collect_files(unc, file_list, on_log)
+            self._collect_files(unc, file_list, empty_dirs, on_log)
 
         total_files = len(file_list)
         total_bytes = sum(sz for _, sz in file_list)
-        on_log(f"Found {total_files} file(s) · {_fmt_size(total_bytes)} total")
+        on_log(
+            f"Found {total_files} file(s) · {_fmt_size(total_bytes)} total"
+            + (f" · {len(empty_dirs)} empty folder(s)" if empty_dirs else "")
+        )
 
-        if total_files == 0 or self._is_cancelled:
+        if self._is_cancelled:
             on_finished(0, 0)
             return
 
+        # ── create empty directories first ────────────────────────────────────
+        for unc_dir in empty_dirs:
+            parts     = unc_dir.lstrip("\\").split("\\")
+            rel_parts = parts[2:] if len(parts) > 2 else parts[-1:]
+            local_dir = Path(destination).joinpath(*rel_parts)
+            try:
+                local_dir.mkdir(parents=True, exist_ok=True)
+                on_log(f"  📁 Created empty folder: {local_dir}")
+            except Exception as exc:
+                on_log(f"  ⚠ Could not create folder '{local_dir}': {exc}")
+
+        if total_files == 0:
+            on_finished(0, 0)
+            return
+
+        # ── copy files ────────────────────────────────────────────────────────
         copied_files = 0
         copied_bytes = 0
         failed_files = 0
@@ -172,15 +195,35 @@ class SMBBrowser:
         on_log("─" * 40)
         on_finished(copied_files, failed_files)
 
-    def _collect_files(self, unc_path: str,
-                       out: list[tuple[str, int]],
-                       on_log: Callable[[str], None]) -> None:
+    def _collect_files(
+        self,
+        unc_path:  str,
+        out:       list[tuple[str, int]],
+        empty_dirs: list[str],
+        on_log:    Callable[[str], None],
+    ) -> None:
+        """
+        Recursively collect all files under *unc_path* into *out*.
+        Directories that turn out to contain no files (at any depth) are
+        recorded in *empty_dirs* so the caller can still create them on disk.
+        """
         try:
             import stat as stat_mod
             st = smbclient.stat(unc_path)
             if stat_mod.S_ISDIR(st.st_mode):
-                for entry in smbclient.scandir(unc_path):
-                    self._collect_files(f"{unc_path}\\{entry.name}", out, on_log)
+                children = list(smbclient.scandir(unc_path))
+                if not children:
+                    # Genuinely empty directory — record it directly.
+                    empty_dirs.append(unc_path)
+                else:
+                    files_before = len(out)
+                    for entry in children:
+                        self._collect_files(
+                            f"{unc_path}\\{entry.name}", out, empty_dirs, on_log
+                        )
+                    # If recursing into all children produced no files, this
+                    # directory only contained other empty directories (which
+                    # were already added). Nothing extra to do here.
             else:
                 out.append((unc_path, st.st_size))
         except Exception as exc:
