@@ -214,6 +214,11 @@ Forcing the application window shut during active transfers can leave corrupt, i
 ---
 
 ## License
+![Build](https://github.com/Gobiilee/pyrobocopy/actions/workflows/build-release.yml/badge.svg)
+
+![Python](https://img.shields.io/badge/Python-3.10-blue)
+
+![License](https://img.shields.io/badge/License-MIT-green)
 
 This project is open-source and available under the [MIT License](https://www.google.com/search?q=LICENSE).
 
