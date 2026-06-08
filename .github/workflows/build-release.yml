@@ -42,7 +42,7 @@ jobs:
       with:
         files: dist/*.exe
         # If triggered by a tag, use the tag name. If triggered by a branch, use a dev label.
-        name: ${{ github.ref_type == 'tag' && github.ref_name || 'Development Build (tim_dev)' }}
+        name: ${{ github.ref_type == 'tag' && github.ref_name || 'Development Build' }}
         tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'latest-dev' }}
         draft: false
         prerelease: ${{ github.ref_type != 'tag' }}
