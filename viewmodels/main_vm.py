@@ -21,6 +21,7 @@ callback so stats/ETA keep updating even when only one huge file is
 being copied.
 """
 
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -80,12 +81,15 @@ class CopyWorker(QThread):
         self.copier = copier
         self.src = src
         self.dst = dst
+        # SOLUTION: Create a Mutex lock to protect shared data between child threads.
+        self._lock = threading.Lock()
 
     def run(self) -> None:
         self.copier._is_cancelled = False
 
         src_path = Path(self.src)
-        dst_path = Path(self.dst) / src_path.name
+        dst_path = Path(self.dst)
+        # dst_path = Path(self.dst) / src_path.name
 
         if not src_path.exists():
             self.log_message.emit(f"Error: Source '{self.src}' does not exist.")
@@ -115,49 +119,97 @@ class CopyWorker(QThread):
         start_time = time.perf_counter()
         last_stats_emit = start_time
 
-        def _emit_stats():
-            """Recalculate and emit stats_tick. Called from progress_cb and after each file."""
-            nonlocal last_stats_emit
+        # New rule: Subthreads will NO longer automatically .emit() the stats signal continuously.
+        # Instead, every 100ms, this function will collect the current data to send to the UI.
+        def _calculate_and_emit_stats():
             now = time.perf_counter()
-            if now - last_stats_emit < self.STATS_INTERVAL:
-                return
-            last_stats_emit = now
-
-            # Prune old window entries
             cutoff = now - WINDOW
-            while speed_window and speed_window[0][0] < cutoff:
-                speed_window.popleft()
+            
+            with self._lock:
+                while speed_window and speed_window[0][0] < cutoff:
+                    speed_window.popleft()
 
-            if speed_window:
-                window_bytes = sum(b for _, b in speed_window)
-                window_dur   = now - speed_window[0][0] + 0.001
-                speed_bps    = window_bytes / window_dur
-            else:
-                speed_bps = 0.0
+                if speed_window:
+                    window_bytes = sum(b for _, b in speed_window)
+                    window_dur   = now - speed_window[0][0] + 0.001
+                    speed_bps    = window_bytes / window_dur
+                else:
+                    speed_bps = 0.0
 
-            remaining = max(total_bytes - copied_bytes, 0)
+                current_copied_bytes = copied_bytes
+                current_copied_files = copied_files
+
+            remaining = max(total_bytes - current_copied_bytes, 0)
             eta = remaining / speed_bps if speed_bps > 0 else 0.0
+            
+            # Send safe data to ViewModel
             self.stats_tick.emit(
-                copied_files, total_files,
-                copied_bytes, total_bytes,
+                current_copied_files, total_files,
+                current_copied_bytes, total_bytes,
                 speed_bps, eta,
             )
 
-        def _make_progress_cb():
-            """
-            Returns a closure that the copier calls after each 256 KB chunk.
-            Adds to the rolling speed window and emits a stats_tick if enough
-            time has passed — this is the key fix for large-file UI freezes.
-            """
-            def progress_cb(chunk_bytes: int):
+        # Create a timer thread to run in parallel directly within QThread to periodically push stats every 100ms.
+        stats_timer = threading.Timer(0.1, lambda: None)
+        is_running = True
+
+        def stats_loop():
+            while is_running:
+                time.sleep(0.1)
+                if not is_running:
+                    break
+                _calculate_and_emit_stats()
+
+        stats_thread = threading.Thread(target=stats_loop, daemon=True)
+        stats_thread.start()
+
+        # def _emit_stats():
+        #     """Recalculate and emit stats_tick. Called from progress_cb and after each file."""
+        #     nonlocal last_stats_emit
+        #     now = time.perf_counter()
+        #     if now - last_stats_emit < self.STATS_INTERVAL:
+        #         return
+        #     last_stats_emit = now
+
+        #     # Prune old window entries
+        #     cutoff = now - WINDOW
+        #     while speed_window and speed_window[0][0] < cutoff:
+        #         speed_window.popleft()
+
+        #     if speed_window:
+        #         window_bytes = sum(b for _, b in speed_window)
+        #         window_dur   = now - speed_window[0][0] + 0.001
+        #         speed_bps    = window_bytes / window_dur
+        #     else:
+        #         speed_bps = 0.0
+
+        #     remaining = max(total_bytes - copied_bytes, 0)
+        #     eta = remaining / speed_bps if speed_bps > 0 else 0.0
+        #     self.stats_tick.emit(
+        #         copied_files, total_files,
+        #         copied_bytes, total_bytes,
+        #         speed_bps, eta,
+        #     )
+
+        # def _make_progress_cb():
+        #     """
+        #     Returns a closure that the copier calls after each 256 KB chunk.
+        #     Adds to the rolling speed window and emits a stats_tick if enough
+        #     time has passed — this is the key fix for large-file UI freezes.
+        #     """
+        def progress_cb(chunk_bytes: int):
+            nonlocal copied_bytes
+            now = time.perf_counter()
+        #     copied_bytes += chunk_bytes
+        #     speed_window.append((now, chunk_bytes))
+        #     # Signal raw bytes so the VM can re-emit to View
+        #     self.bytes_tick.emit(chunk_bytes)
+        #     _emit_stats()
+        # return progress_cb
+            with self._lock:
                 nonlocal copied_bytes
-                now = time.perf_counter()
                 copied_bytes += chunk_bytes
                 speed_window.append((now, chunk_bytes))
-                # Signal raw bytes so the VM can re-emit to View
-                self.bytes_tick.emit(chunk_bytes)
-                _emit_stats()
-            return progress_cb
 
         with ThreadPoolExecutor(max_workers=self.copier.workers) as pool:
             future_map = {
@@ -165,7 +217,7 @@ class CopyWorker(QThread):
                     self.copier.copy_file,
                     f,
                     dst_path / f.relative_to(src_path),
-                    _make_progress_cb(),
+                    progress_cb,
                 ): f
                 for f in files
                 if not self.copier._is_cancelled
@@ -180,18 +232,26 @@ class CopyWorker(QThread):
                     continue
 
                 results.append(result)
-                copied_files += 1
+                # copied_files += 1
+                with self._lock:
+                    copied_files += 1
+                
+                self.file_done.emit(result.filepath.name, result.size_bytes, result.success)
 
                 # NOTE: copied_bytes already includes this file's bytes via
                 # the progress_cb, so we must NOT add size_bytes here again.
-                _emit_stats()
+                # _emit_stats()
 
                 # Signal the completed file (cheap: name + int + bool)
-                self.file_done.emit(
-                    result.filepath.name,
-                    result.size_bytes,
-                    result.success,
-                )
+                # self.file_done.emit(
+                #     result.filepath.name,
+                #     result.size_bytes,
+                #     result.success,
+                # )
+
+        # Stop the periodic stat push stream
+        is_running = False
+        stats_thread.join(timeout=0.5)
 
         # ── summary ───────────────────────────────────────────────────────────
         elapsed   = max(time.perf_counter() - start_time, 0.001)
@@ -234,6 +294,9 @@ class RobocopyWorker(QThread):
 
     def run(self) -> None:
         self.runner._cancelled = False
+        # src_path = Path(self.src)
+        # dst_path = Path(self.dst) / src_path.name
+        # dst_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Emit a synthetic scan_done so the UI shows *something* immediately.
         # We don't have a total in advance with robocopy, so we use 0/0.
