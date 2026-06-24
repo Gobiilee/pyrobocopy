@@ -174,6 +174,6 @@ class SplashScreen(QWidget):
         # ── version / copyright ───────────────────────────────────────────────
         p.setPen(QColor("#3a3a3a"))
         p.drawText(0, H - 18, W, 14,
-                   Qt.AlignmentFlag.AlignHCenter, "v0.3.0")
+                   Qt.AlignmentFlag.AlignHCenter, "v0.3.1")
 
         p.end()

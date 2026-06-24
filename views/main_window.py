@@ -11,14 +11,14 @@ from __future__ import annotations
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QLabel, QProgressBar,
-    QTextEdit, QSpinBox, QLineEdit, QFrame,
+    QTextEdit, QPlainTextEdit, QSpinBox, QLineEdit, QFrame, QListWidget, QListWidgetItem,
     QTabWidget, QTreeWidget, QTreeWidgetItem,
     QScrollArea, QSizePolicy, QMessageBox,
     QDialog, QCheckBox, QGroupBox, QGridLayout,
     QRadioButton, QButtonGroup, QDialogButtonBox,
 )
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui  import QTextCursor, QIcon, QColor, QFont
+from PyQt6.QtGui  import QIcon, QColor, QFont
 
 from viewmodels.main_vm     import MainViewModel
 from models.robocopy_runner import RobocopyOptions
@@ -203,6 +203,9 @@ class StatsBar(QFrame):
         self.files_lbl = self._make_stat("Files",    "0 / 0")
         self.pct_lbl   = self._make_stat("Progress", "0 %")
 
+        # Give Files a min-width so it never crowds Progress when count is large
+        self.files_lbl.setMinimumWidth(180)
+
         for w in (self.speed_lbl, self.eta_lbl, self.files_lbl, self.pct_lbl):
             nums.addWidget(w)
         nums.addStretch()
@@ -249,12 +252,21 @@ class StatsBar(QFrame):
 
     def update_stats(self, cf, tf, cb, tb, speed, eta):
         from viewmodels.main_vm import fmt_size, fmt_time
-        pct = int(cb / tb * 100) if tb else 0
-        self._val(self.speed_lbl).setText(f"{fmt_size(int(speed))}/s")
-        self._val(self.eta_lbl).setText(fmt_time(eta))
-        self._val(self.files_lbl).setText(f"{cf} / {tf}")
-        self._val(self.pct_lbl).setText(f"{pct} %")
-        self.bar.setValue(pct)
+        self._val(self.speed_lbl).setText(
+            f"{fmt_size(int(speed))}/s" if speed > 0 else "— B/s"
+        )
+        self._val(self.eta_lbl).setText(fmt_time(eta) if eta > 0 else "—")
+        if tf == 0:
+            # Total unknown (robocopy mid-run): show running count only
+            self._val(self.files_lbl).setText(f"{cf} / ?")
+            self._val(self.pct_lbl).setText("—")
+            self.bar.setValue(0)
+        else:
+            # Use file-count ratio: byte totals aren't reliable in robocopy mode
+            pct = max(0, min(100, int(cf / tf * 100)))
+            self._val(self.files_lbl).setText(f"{cf} / {tf}")
+            self._val(self.pct_lbl).setText(f"{pct} %")
+            self.bar.setValue(pct)
 
     def reset(self):
         self._val(self.speed_lbl).setText("— B/s")
@@ -554,27 +566,32 @@ class LocalTab(QWidget):
 
         # ── File list ─────────────────────────────────────────────────────────
         layout.addWidget(_label("FILES", bold=True, size=8, color="#555555"))
-        self.file_log = QTextEdit()
-        self.file_log.setReadOnly(True)
+        self.file_log = QListWidget()
         self.file_log.setStyleSheet("""
-            QTextEdit { background:#1e1e1e; border:1px solid #333;
-                        border-radius:6px; color:#ddd;
-                        font-family:'Consolas','Courier New',monospace;
-                        font-size:8.5pt; padding:4px; }
+            QListWidget { background:#1e1e1e; border:1px solid #333;
+                          border-radius:6px; color:#ddd;
+                          font-family:'Consolas','Courier New',monospace;
+                          font-size:8.5pt; padding:4px; outline:none; }
+            QListWidget::item { padding:0px 2px; border:none; }
+            QListWidget::item:selected { background:transparent; color:#ddd; }
         """)
+        self.file_log.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.file_log.setUniformItemSizes(True)   # critical for O(1) scroll performance
+        self._file_log_max = 500                  # rolling cap — keeps memory bounded
         layout.addWidget(self.file_log, 1)   # stretch — fills available space
 
         # ── Log ───────────────────────────────────────────────────────────────
         layout.addWidget(_label("LOG", bold=True, size=8, color="#555555"))
-        self.log_area = QTextEdit()
+        self.log_area = QPlainTextEdit()
         self.log_area.setReadOnly(True)
         self.log_area.setMinimumHeight(60)
         self.log_area.setMaximumHeight(120)
+        self.log_area.setMaximumBlockCount(500)
         self.log_area.setStyleSheet("""
-            QTextEdit { background:#1e1e1e; border:1px solid #333;
-                        border-radius:6px; color:#aaa;
-                        font-family:'Consolas','Courier New',monospace;
-                        font-size:8pt; padding:4px; }
+            QPlainTextEdit { background:#1e1e1e; border:1px solid #333;
+                             border-radius:6px; color:#aaa;
+                             font-family:'Consolas','Courier New',monospace;
+                             font-size:8pt; padding:4px; }
         """)
         layout.addWidget(self.log_area)
 
@@ -670,29 +687,27 @@ class LocalTab(QWidget):
             line_edit.setText(folder)
 
     def _append_log(self, msg):
-        self.log_area.append(msg)
+        self.log_area.appendPlainText(msg)
         sb = self.log_area.verticalScrollBar()
         sb.setValue(sb.maximum())
 
     def _on_file_batch(self, rows):
         if not rows:
             return
-        parts = []
+        # Rolling cap: remove oldest rows if over limit
+        overflow = self.file_log.count() + len(rows) - self._file_log_max
+        if overflow > 0:
+            for _ in range(overflow):
+                self.file_log.takeItem(0)
+        self.file_log.setUpdatesEnabled(False)
         for name, size, status in rows:
             icon  = FILE_ICON.get(status, "·")
             color = FILE_COLOR.get(status, "#888888")
-            safe  = name.replace("&", "&amp;").replace("<", "&lt;")
-            parts.append(
-                f'<span style="color:{color}">{icon}</span>'
-                f'&nbsp;{safe}'
-                f'<span style="color:#555555"> &nbsp;{size}</span>'
-            )
-        cursor = self.file_log.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.file_log.setTextCursor(cursor)
-        self.file_log.insertHtml("<br>".join(parts) + "<br>")
-        sb = self.file_log.verticalScrollBar()
-        sb.setValue(sb.maximum())
+            item  = QListWidgetItem(f"{icon} {name}  {size}")
+            item.setForeground(QColor(color))
+            self.file_log.addItem(item)
+        self.file_log.setUpdatesEnabled(True)
+        self.file_log.scrollToBottom()
 
     def _on_action(self):
         if self.action_btn.text().startswith("▶"):
@@ -963,29 +978,34 @@ class NetworkTab(QWidget):
 
         # File list
         layout.addWidget(_label("FILES", bold=True, size=8, color="#555555"))
-        self.file_log = QTextEdit()
-        self.file_log.setReadOnly(True)
+        self.file_log = QListWidget()
         self.file_log.setMinimumHeight(80)
         self.file_log.setMaximumHeight(200)
         self.file_log.setStyleSheet("""
-            QTextEdit { background:#1e1e1e; border:1px solid #333;
-                        border-radius:6px; color:#ddd;
-                        font-family:'Consolas','Courier New',monospace;
-                        font-size:8.5pt; padding:4px; }
+            QListWidget { background:#1e1e1e; border:1px solid #333;
+                          border-radius:6px; color:#ddd;
+                          font-family:'Consolas','Courier New',monospace;
+                          font-size:8.5pt; padding:4px; outline:none; }
+            QListWidget::item { padding:0px 2px; border:none; }
+            QListWidget::item:selected { background:transparent; color:#ddd; }
         """)
+        self.file_log.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.file_log.setUniformItemSizes(True)
+        self._file_log_max = 500
         layout.addWidget(self.file_log)
 
         # Log
         layout.addWidget(_label("LOG", bold=True, size=8, color="#555555"))
-        self.log_area = QTextEdit()
+        self.log_area = QPlainTextEdit()
         self.log_area.setReadOnly(True)
         self.log_area.setMinimumHeight(60)
         self.log_area.setMaximumHeight(120)
+        self.log_area.setMaximumBlockCount(500)
         self.log_area.setStyleSheet("""
-            QTextEdit { background:#1e1e1e; border:1px solid #333;
-                        border-radius:6px; color:#aaa;
-                        font-family:'Consolas','Courier New',monospace;
-                        font-size:8pt; padding:4px; }
+            QPlainTextEdit { background:#1e1e1e; border:1px solid #333;
+                             border-radius:6px; color:#aaa;
+                             font-family:'Consolas','Courier New',monospace;
+                             font-size:8pt; padding:4px; }
         """)
         layout.addWidget(self.log_area)
 
@@ -1165,29 +1185,27 @@ class NetworkTab(QWidget):
     # ── shared log helpers ────────────────────────────────────────────────────
 
     def _append_log(self, msg):
-        self.log_area.append(msg)
+        self.log_area.appendPlainText(msg)
         sb = self.log_area.verticalScrollBar()
         sb.setValue(sb.maximum())
 
     def _on_file_batch(self, rows):
         if not rows:
             return
-        parts = []
+        # Rolling cap: remove oldest rows if over limit
+        overflow = self.file_log.count() + len(rows) - self._file_log_max
+        if overflow > 0:
+            for _ in range(overflow):
+                self.file_log.takeItem(0)
+        self.file_log.setUpdatesEnabled(False)
         for name, size, status in rows:
             icon  = FILE_ICON.get(status, "·")
             color = FILE_COLOR.get(status, "#888888")
-            safe  = name.replace("&", "&amp;").replace("<", "&lt;")
-            parts.append(
-                f'<span style="color:{color}">{icon}</span>'
-                f'&nbsp;{safe}'
-                f'<span style="color:#555555"> &nbsp;{size}</span>'
-            )
-        cursor = self.file_log.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.file_log.setTextCursor(cursor)
-        self.file_log.insertHtml("<br>".join(parts) + "<br>")
-        sb = self.file_log.verticalScrollBar()
-        sb.setValue(sb.maximum())
+            item  = QListWidgetItem(f"{icon} {name}  {size}")
+            item.setForeground(QColor(color))
+            self.file_log.addItem(item)
+        self.file_log.setUpdatesEnabled(True)
+        self.file_log.scrollToBottom()
 
 
 # ── MAIN WINDOW ───────────────────────────────────────────────────────────────
