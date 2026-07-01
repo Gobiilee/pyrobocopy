@@ -298,6 +298,10 @@ class RobocopyWorker(QThread):
         # dst_path = Path(self.dst) / src_path.name
         # dst_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Mirror Python-mode behaviour: copy src into dst/<src_name>/
+        src_name = Path(self.src).name
+        dst_path = str(Path(self.dst) / src_name)
+
         # Emit a synthetic scan_done so the UI shows *something* immediately.
         # We don't have a total in advance with robocopy, so we use 0/0.
         self.scan_done.emit(0, 0)
@@ -312,12 +316,14 @@ class RobocopyWorker(QThread):
             self.stats_tick.emit(cf, tf, cb, tb, speed, eta)
 
         def _finished(ok: bool, exit_code: int):
-            status = "completed" if ok else f"finished with errors (code {exit_code})"
+            status = "completed successfully" if ok else f"finished with errors (code {exit_code})"
+            self.log_message.emit("─" * 40)
             self.log_message.emit(f"robocopy {status}  (exit {exit_code})")
+            self.log_message.emit("─" * 40)
 
         try:
             exit_code = self.runner.run(
-                self.src, self.dst,
+                self.src, dst_path,
                 log_cb=_log,
                 file_done_cb=_file_done,
                 stats_cb=_stats,

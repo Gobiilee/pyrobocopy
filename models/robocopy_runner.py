@@ -105,11 +105,16 @@ class RobocopyOptions:
 #   100%   New File          1234567 filename.ext
 #    50%
 _PCT_RE  = re.compile(r"^\s*(\d+)%")
+# With /NP (no-progress) robocopy emits ONE line per file — no leading "100%":
+#           New File          1234567 D:\path\file.ext
+# We require leading whitespace so header words like "New File" in the
+# summary table don't accidentally match.
 _FILE_RE = re.compile(
-    r"^\s*100%\s+(?:New File|Newer|Older|Same|Extra File|Lonely)\s+(\S+)\s+(.+)$"
+    r"^\s+(?:New File|Newer|Older|Same|Extra File|Lonely)\s+(\d+)\s+(.+)$"
 )
 # Summary block line:  Files :       123       0       0     123       0       0
-_SUMM_RE = re.compile(r"^\s*Files\s*:\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)")
+#                      total  copied  skipped  mismatch  failed  extras
+_SUMM_RE = re.compile(r"^\s*Files\s*:\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)")
 
 
 @dataclass
@@ -170,7 +175,20 @@ class RobocopyRunner:
 
         prog = RobocopyProgress()
         start_time = time.perf_counter()
-        bytes_estimate = 0   # robocopy doesn't give us byte totals easily
+
+        # Speed tracking — rolling 3-second window (mirrors Python-mode CopyWorker)
+        from collections import deque
+        speed_window: deque[tuple[float, int]] = deque()
+        SPEED_WINDOW = 3.0
+        copied_bytes_total: int = 0
+
+        # Pre-create the destination folder so it exists even if robocopy
+        # would otherwise only create it lazily (matches Python-mode behaviour).
+        try:
+            Path(dst).mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            if log_cb:
+                log_cb(f"WARNING: could not pre-create destination: {exc}")
 
         try:
             self._proc = subprocess.Popen(
@@ -198,52 +216,86 @@ class RobocopyRunner:
                 continue
 
             prog.log_lines.append(line)
-            if log_cb:
-                log_cb(line)
 
-            # Parse percentage of current file
+            # Parse percentage of current file (only present without /NP)
             m_pct = _PCT_RE.match(line)
             if m_pct:
                 prog.last_pct = int(m_pct.group(1))
+                # Don't forward raw percentage lines to the log
+                continue
 
-            # Parse completed-file lines (100%)
+            # Parse completed-file line (with /NP, no leading 100%):
+            #   "      New File          4746    D:\path\file.ext"
             m_file = _FILE_RE.match(line)
             if m_file:
-                size_str = m_file.group(1)
-                name     = Path(m_file.group(2)).name
-                try:
-                    fsize = int(size_str)
-                except ValueError:
-                    fsize = 0
+                fsize = int(m_file.group(1))
+                name  = Path(m_file.group(2).strip()).name
                 prog.copied_files += 1
                 prog.last_filename = name
+
+                # Update byte-level speed window
+                now = time.perf_counter()
+                copied_bytes_total += fsize
+                speed_window.append((now, fsize))
+                cutoff = now - SPEED_WINDOW
+                while speed_window and speed_window[0][0] < cutoff:
+                    speed_window.popleft()
+
+                # Compute speed and ETA from our own byte tracking
+                if speed_window:
+                    window_bytes = sum(b for _, b in speed_window)
+                    window_dur   = max(now - speed_window[0][0], 0.001)
+                    speed_bps    = window_bytes / window_dur
+                else:
+                    speed_bps = 0.0
+
+                # Emit a clean log line matching Python-mode style
+                if log_cb:
+                    log_cb(f"[{prog.copied_files}] Copied: {name}")
                 if file_done_cb:
                     file_done_cb(name, fsize, True)
 
-            # Parse summary line to grab total / failed / skipped
-            m_summ = _SUMM_RE.match(line)
-            if m_summ:
-                prog.total_files   = int(m_summ.group(1))
-                prog.copied_files  = int(m_summ.group(2))
-                prog.skipped_files = int(m_summ.group(3))
-                prog.failed_files  = int(m_summ.group(5)) if len(m_summ.groups()) >= 5 else 0
+                # Emit stats — use -1 as total sentinel while unknown (view shows "N / ?")
+                if stats_cb:
+                    tf = prog.total_files   # 0 while unknown, real value after summary
+                    cf = prog.copied_files if tf == 0 else min(prog.copied_files, tf)
+                    eta = 0.0
+                    stats_cb(cf, tf, copied_bytes_total, copied_bytes_total, speed_bps, eta)
+                continue
 
-            # Emit a stats tick for the UI
-            if stats_cb and prog.total_files > 0:
-                elapsed = max(time.perf_counter() - start_time, 0.001)
-                # rough speed: assume equal file sizes
-                speed = (prog.copied_files / prog.total_files) * bytes_estimate / elapsed if bytes_estimate else 0
-                eta   = 0.0
-                stats_cb(
-                    prog.copied_files, prog.total_files,
-                    prog.copied_files, prog.total_files,   # use file counts as proxy for bytes
-                    speed, eta,
-                )
+            # Don't parse "Files :" lines mid-stream — robocopy emits one per
+            # subdirectory during the copy, which would corrupt total_files.
+            # We parse the real final summary after proc.wait() instead.
+            if _SUMM_RE.match(line):
+                continue
+
+            # Forward all other meaningful lines (headers, errors, dir names…)
+            if log_cb:
+                log_cb(line)
 
         self._proc.wait()
         exit_code = self._proc.returncode if not self._cancelled else -1
         prog.finished = True
         prog.exit_code = exit_code
+
+        # Parse the LAST "Files :" line from the captured output — this is the
+        # real grand-total summary (robocopy also emits per-directory lines
+        # mid-run which we deliberately skipped above to avoid corrupting counts).
+        for line in reversed(prog.log_lines):
+            m = _SUMM_RE.match(line)
+            if m:
+                prog.total_files   = int(m.group(1))
+                prog.copied_files  = int(m.group(2))
+                prog.skipped_files = int(m.group(3))
+                prog.failed_files  = int(m.group(5))
+                break
+
+        # Emit one final accurate stats tick
+        if stats_cb and prog.total_files > 0:
+            elapsed   = max(time.perf_counter() - start_time, 0.001)
+            avg_speed = copied_bytes_total / elapsed
+            cf = min(prog.copied_files, prog.total_files)
+            stats_cb(cf, prog.total_files, copied_bytes_total, copied_bytes_total, avg_speed, 0.0)
 
         if finished_cb:
             # robocopy exit codes 0-7 are success/informational; >=8 are errors
